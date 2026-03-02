@@ -9,6 +9,6 @@ import (
 
 func PingService(c *gin.Context) {
 	c.JSON(http.StatusOK, util.ResponseSuccess(gin.H{
-		"message": "pong",
+		"message": "ping pong",
 	}))
 }

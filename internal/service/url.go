@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -9,12 +11,16 @@ import (
 	"url-shortener/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mssola/useragent"
+	"golang.org/x/net/html"
 	"gorm.io/gorm"
 )
 
 func ShortenURL(c *gin.Context) {
 	var input struct {
-		OriginalURL string `json:"original_url" validate:"required,url"`
+		OriginalURL string     `json:"original_url" validate:"required,url"`
+		CustomSlug  string     `json:"custom_slug"`
+		ExpiresAt   *time.Time `json:"expires_at"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -22,12 +28,35 @@ func ShortenURL(c *gin.Context) {
 		return
 	}
 
-	shortCode := util.GenerateShortCode()
+	shortCode := ""
+	if input.CustomSlug != "" {
+		// Basic validation for custom slug
+		if len(input.CustomSlug) < 3 || len(input.CustomSlug) > 20 {
+			c.JSON(http.StatusBadRequest, util.ResponseError("custom slug must be between 3 and 20 characters"))
+			return
+		}
+		// Check if it already exists
+		var existing models.URL
+		if err := config.DB.Where("short_code = ?", input.CustomSlug).First(&existing).Error; err == nil {
+			c.JSON(http.StatusConflict, util.ResponseError("custom slug already in use"))
+			return
+		}
+		shortCode = input.CustomSlug
+	} else {
+		shortCode = util.GenerateShortCode()
+	}
 
 	url := models.URL{
 		OriginalURL: input.OriginalURL,
 		ShortCode:   shortCode,
+		ExpiresAt:   input.ExpiresAt,
 	}
+
+	// Fetch OG Tags
+	title, desc, img := fetchOGTags(input.OriginalURL)
+	url.Title = title
+	url.Description = desc
+	url.Image = img
 
 	if userID, ok := c.Get("user_id"); ok {
 		userIDValue := userID.(uint)
@@ -63,29 +92,15 @@ func RedirectURL(c *gin.Context) {
 		if err == nil {
 			// Find URL first to get ID for click record
 			var url models.URL
-			if err := config.DB.Where("short_code = ?", shortCode).First(&url).Error; err != nil {
-				c.JSON(http.StatusNotFound, util.ResponseError("URL not found"))
+			if err := config.DB.Where("short_code = ?", shortCode).First(&url).Error; err == nil {
+				if url.ExpiresAt != nil && time.Now().After(*url.ExpiresAt) {
+					c.JSON(http.StatusGone, util.ResponseError("URL expired"))
+					return
+				}
+				go recordClick(url.ID, c.ClientIP(), c.GetHeader("User-Agent"))
+				c.Redirect(http.StatusMovedPermanently, cachedURL)
 				return
 			}
-			if url.ExpiresAt != nil && time.Now().After(*url.ExpiresAt) {
-				c.JSON(http.StatusGone, util.ResponseError("URL expired"))
-				return
-			}
-
-			// Create click record
-			ip := c.ClientIP()
-			userAgent := c.GetHeader("User-Agent")
-			click := models.Click{
-				URLID:     url.ID,
-				IP:        ip,
-				UserAgent: userAgent,
-			}
-			if err := config.DB.Create(&click).Error; err != nil {
-				// Log error but don't fail the redirect
-			}
-			config.DB.Model(&url).Update("clicks", gorm.Expr("clicks + 1"))
-			c.Redirect(http.StatusMovedPermanently, cachedURL)
-			return
 		}
 	}
 
@@ -101,23 +116,13 @@ func RedirectURL(c *gin.Context) {
 	}
 
 	// Create click record
-	ip := c.ClientIP()
-	userAgent := c.GetHeader("User-Agent")
-	click := models.Click{
-		URLID:     url.ID,
-		IP:        ip,
-		UserAgent: userAgent,
-	}
-	if err := config.DB.Create(&click).Error; err != nil {
-		// Log error but don't fail the redirect
-	}
+	go recordClick(url.ID, c.ClientIP(), c.GetHeader("User-Agent"))
 
 	// Cache (skip if Redis is not available)
 	if config.RedisClient != nil {
 		config.RedisClient.Set(config.RedisClient.Context(), shortCode, url.OriginalURL, time.Hour)
 	}
 
-	config.DB.Model(&url).Update("clicks", url.Clicks+1)
 	c.Redirect(http.StatusMovedPermanently, url.OriginalURL)
 }
 
@@ -228,4 +233,96 @@ func DeleteURL(c *gin.Context) {
 	c.JSON(http.StatusOK, util.ResponseSuccess(gin.H{
 		"message": "URL deleted successfully",
 	}))
+}
+
+func recordClick(urlID uint, ip, ua string) {
+	uaParser := useragent.New(ua)
+	browserName, browserVersion := uaParser.Browser()
+	click := models.Click{
+		URLID:     urlID,
+		IP:        ip,
+		UserAgent: ua,
+		Browser:   fmt.Sprintf("%s %s", browserName, browserVersion),
+		OS:        uaParser.OS(),
+		Device:    "Desktop", // Default
+	}
+
+	if uaParser.Mobile() {
+		click.Device = "Mobile"
+	} else if uaParser.Bot() {
+		click.Device = "Bot"
+	}
+
+	// Fetch Geographic Data
+	resp, err := http.Get(fmt.Sprintf("http://ip-api.com/json/%s", ip))
+	if err == nil {
+		defer resp.Body.Close()
+		var geo struct {
+			Country string `json:"country"`
+			City    string `json:"city"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&geo); err == nil {
+			click.Country = geo.Country
+			click.City = geo.City
+		}
+	}
+
+	if err := config.DB.Create(&click).Error; err != nil {
+		// Log error
+	}
+
+	config.DB.Model(&models.URL{}).Where("id = ?", urlID).Update("clicks", gorm.Expr("clicks + 1"))
+}
+
+func fetchOGTags(urlStr string) (string, string, string) {
+	resp, err := http.Get(urlStr)
+	if err != nil {
+		return "", "", ""
+	}
+	defer resp.Body.Close()
+
+	tokenizer := html.NewTokenizer(resp.Body)
+	var title, desc, img string
+
+	for {
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+
+		if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
+			t := tokenizer.Token()
+			if t.Data == "meta" {
+				var property, content string
+				for _, attr := range t.Attr {
+					if attr.Key == "property" || attr.Key == "name" {
+						property = attr.Val
+					}
+					if attr.Key == "content" {
+						content = attr.Val
+					}
+				}
+
+				switch property {
+				case "og:title", "twitter:title":
+					if title == "" {
+						title = content
+					}
+				case "og:description", "description", "twitter:description":
+					if desc == "" {
+						desc = content
+					}
+				case "og:image", "twitter:image":
+					if img == "" {
+						img = content
+					}
+				}
+			} else if t.Data == "title" && title == "" {
+				tokenizer.Next()
+				title = tokenizer.Token().Data
+			}
+		}
+	}
+
+	return title, desc, img
 }

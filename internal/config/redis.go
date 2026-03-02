@@ -10,8 +10,9 @@ import (
 var RedisClient *redis.Client
 
 func ConnectRedis() {
+	addr := os.Getenv("REDIS_HOST") + ":" + os.Getenv("REDIS_PORT")
 	RedisClient = redis.NewClient(&redis.Options{
-		Addr:     os.Getenv("REDIS_ADDR"), // e.g., localhost:6379
+		Addr:     addr,
 		Password: os.Getenv("REDIS_PASSWORD"),
 		DB:       0,
 	})

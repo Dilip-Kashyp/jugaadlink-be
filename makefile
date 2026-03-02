@@ -11,7 +11,7 @@ build:
 	docker build -t $(APP_NAME) .
 
 up:
-	docker compose up -d
+	docker compose up
 
 down:
 	docker compose down
