@@ -16,6 +16,7 @@ type Click struct {
 	OS        string    `json:"os"`
 	Country   string    `json:"country"`
 	City      string    `json:"city"`
+	Referer   string    `json:"referer"`
 	Timestamp time.Time `json:"timestamp" gorm:"default:CURRENT_TIMESTAMP"`
 	URL       URL       `gorm:"foreignKey:URLID"`
 }

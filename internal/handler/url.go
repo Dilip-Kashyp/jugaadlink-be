@@ -10,8 +10,13 @@ import (
 func URLRoutes(r *gin.RouterGroup) {
 	u := r.Group("/url")
 	u.POST("/shorten", middleware.ResolveIdentity(), middleware.RateLimiter(), service.ShortenURL)
-	u.GET("/history", middleware.AuthRequired(), service.GetHistory)
-	u.GET("/redirect/:code", service.RedirectURL) // public route
+	u.GET("/history", middleware.ResolveIdentity(), service.GetHistory)
 	u.DELETE("/:code", middleware.AuthRequired(), service.DeleteURL)
-	u.GET("/stats/:code", middleware.ResolveIdentity(), service.GetURLStats)
+	u.GET("/analytics", middleware.AuthRequired(), service.GetDashboardAnalytics)
+	u.GET("/analytics/:code", middleware.AuthRequired(), service.GetURLStats)
+	u.GET("/preview", middleware.ResolveIdentity(), service.GetLinkPreview)
+}
+
+func RedirectURLRoutes(r *gin.RouterGroup) {
+	r.GET("/:code", service.RedirectURL)
 }

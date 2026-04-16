@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 	"url-shortener/internal/config"
 	"url-shortener/internal/models"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mssola/useragent"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/net/html"
 	"gorm.io/gorm"
 )
@@ -21,6 +23,8 @@ func ShortenURL(c *gin.Context) {
 		OriginalURL string     `json:"original_url" validate:"required,url"`
 		CustomSlug  string     `json:"custom_slug"`
 		ExpiresAt   *time.Time `json:"expires_at"`
+		Password    string     `json:"password"`
+		MaxClicks   int        `json:"max_clicks"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -50,6 +54,12 @@ func ShortenURL(c *gin.Context) {
 		OriginalURL: input.OriginalURL,
 		ShortCode:   shortCode,
 		ExpiresAt:   input.ExpiresAt,
+		MaxClicks:   input.MaxClicks,
+	}
+
+	if input.Password != "" {
+		hashed, _ := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+		url.Password = string(hashed)
 	}
 
 	// Fetch OG Tags
@@ -79,30 +89,12 @@ func ShortenURL(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, util.ResponseSuccess(gin.H{
 		"short_code": shortCode,
-		"short_url":  os.Getenv("SERVER_URL") + "/url/redirect/" + shortCode,
+		"short_url":  os.Getenv("SERVER_URL") + shortCode,
 	}))
 }
 
 func RedirectURL(c *gin.Context) {
 	shortCode := c.Param("code")
-
-	// Check cache (skip if Redis is not available)
-	if config.RedisClient != nil {
-		cachedURL, err := config.RedisClient.Get(config.RedisClient.Context(), shortCode).Result()
-		if err == nil {
-			// Find URL first to get ID for click record
-			var url models.URL
-			if err := config.DB.Where("short_code = ?", shortCode).First(&url).Error; err == nil {
-				if url.ExpiresAt != nil && time.Now().After(*url.ExpiresAt) {
-					c.JSON(http.StatusGone, util.ResponseError("URL expired"))
-					return
-				}
-				go recordClick(url.ID, c.ClientIP(), c.GetHeader("User-Agent"))
-				c.Redirect(http.StatusMovedPermanently, cachedURL)
-				return
-			}
-		}
-	}
 
 	var url models.URL
 	if err := config.DB.Where("short_code = ?", shortCode).First(&url).Error; err != nil {
@@ -110,16 +102,45 @@ func RedirectURL(c *gin.Context) {
 		return
 	}
 
+	// 1. Temporary Check (Time-based)
 	if url.ExpiresAt != nil && time.Now().After(*url.ExpiresAt) {
-		c.JSON(http.StatusGone, util.ResponseError("URL expired"))
+		c.JSON(http.StatusGone, util.ResponseError("link has expired"))
 		return
 	}
 
-	// Create click record
-	go recordClick(url.ID, c.ClientIP(), c.GetHeader("User-Agent"))
+	// 2. Temporary Check (Usage-based)
+	if url.MaxClicks > 0 && url.Clicks >= url.MaxClicks {
+		c.JSON(http.StatusGone, util.ResponseError("click limit reached"))
+		return
+	}
 
-	// Cache (skip if Redis is not available)
-	if config.RedisClient != nil {
+	// 3. Password Protection
+	if url.Password != "" {
+		password := c.GetHeader("X-URL-Password")
+		if password == "" {
+			password = c.Query("password")
+		}
+
+		if password == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"status":            false,
+				"message":           "password required",
+				"password_required": true,
+			})
+			return
+		}
+
+		if err := bcrypt.CompareHashAndPassword([]byte(url.Password), []byte(password)); err != nil {
+			c.JSON(http.StatusUnauthorized, util.ResponseError("incorrect password"))
+			return
+		}
+	}
+
+	// 4. Record Click with Referer
+	go recordClick(url.ID, c.ClientIP(), c.GetHeader("User-Agent"), c.Request.Referer())
+
+	// 5. Cache (only if no password/limits to avoid complex cache invalidation)
+	if url.Password == "" && url.MaxClicks == 0 && url.ExpiresAt == nil && config.RedisClient != nil {
 		config.RedisClient.Set(config.RedisClient.Context(), shortCode, url.OriginalURL, time.Hour)
 	}
 
@@ -170,7 +191,7 @@ func GetHistory(c *gin.Context) {
 			ID:          u.ID,
 			OriginalURL: u.OriginalURL,
 			ShortCode:   u.ShortCode,
-			ShortURL:    os.Getenv("SERVER_URL") + "/url/redirect/" + u.ShortCode,
+			ShortURL:    os.Getenv("SERVER_URL") + u.ShortCode,
 			Clicks:      u.Clicks,
 			ExpiresAt:   u.ExpiresAt,
 			CreatedAt:   u.CreatedAt,
@@ -235,7 +256,7 @@ func DeleteURL(c *gin.Context) {
 	}))
 }
 
-func recordClick(urlID uint, ip, ua string) {
+func recordClick(urlID uint, ip, ua, referer string) {
 	uaParser := useragent.New(ua)
 	browserName, browserVersion := uaParser.Browser()
 	click := models.Click{
@@ -245,6 +266,7 @@ func recordClick(urlID uint, ip, ua string) {
 		Browser:   fmt.Sprintf("%s %s", browserName, browserVersion),
 		OS:        uaParser.OS(),
 		Device:    "Desktop", // Default
+		Referer:   referer,
 	}
 
 	if uaParser.Mobile() {
@@ -275,7 +297,26 @@ func recordClick(urlID uint, ip, ua string) {
 }
 
 func fetchOGTags(urlStr string) (string, string, string) {
-	resp, err := http.Get(urlStr)
+	// Ensure protocol scheme
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		urlStr = "https://" + urlStr
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		return "", "", ""
+	}
+
+	// Add browser-like headers to avoid being blocked by LinkedIn/scraping protections
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", ""
 	}
@@ -325,4 +366,19 @@ func fetchOGTags(urlStr string) (string, string, string) {
 	}
 
 	return title, desc, img
+}
+
+func GetLinkPreview(c *gin.Context) {
+	urlStr := c.Query("url")
+	if urlStr == "" {
+		c.JSON(http.StatusBadRequest, util.ResponseError("URL is required"))
+		return
+	}
+
+	title, desc, img := fetchOGTags(urlStr)
+	c.JSON(http.StatusOK, util.ResponseSuccess(gin.H{
+		"title":       title,
+		"description": desc,
+		"image":       img,
+	}))
 }

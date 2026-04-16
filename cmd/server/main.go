@@ -28,9 +28,11 @@ func main() {
 	config.DB.AutoMigrate(&models.User{}, &models.URL{}, &models.GuestSession{}, &models.Click{})
 
 	v1 := r.Group("/api/v1")
+	public := r.Group("/")
 	handler.PingRoutes(v1)
 	handler.RegisterRoutes(v1)
 	handler.URLRoutes(v1)
+	handler.RedirectURLRoutes(public)
 
 	// go func() {
 	// 	ticker := time.NewTicker(24 * time.Hour) // Run daily

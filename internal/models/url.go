@@ -13,6 +13,8 @@ type URL struct {
 	UserID       *uint        `json:"user_id" gorm:"index"`
 	SessionID    *uint        `json:"session_id" gorm:"index"`
 	Clicks       int          `json:"clicks" gorm:"default:0;check:clicks >= 0"`
+	MaxClicks    int          `json:"max_clicks" gorm:"default:0"`
+	Password     string       `json:"-"` 
 	ExpiresAt    *time.Time   `json:"expires_at"`
 	Title        string       `json:"title"`
 	Description  string       `json:"description"`

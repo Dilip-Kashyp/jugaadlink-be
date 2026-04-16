@@ -42,7 +42,8 @@ func GetURLStats(c *gin.Context) {
 		Browsers    []map[string]interface{} `json:"browsers"`
 		Devices     []map[string]interface{} `json:"devices"`
 		OS         []map[string]interface{} `json:"os"`
-		Countries   []map[string]interface{} `json:"countries"`
+		Regions   []map[string]interface{} `json:"regions"`
+		Referrers   []map[string]interface{} `json:"referrers"`
 		Timeline    []map[string]interface{} `json:"timeline"`
 	}
 
@@ -69,20 +70,27 @@ func GetURLStats(c *gin.Context) {
 		Group("os").
 		Scan(&stats.OS)
 
-	// Country breakdown
+	// Region breakdown
 	config.DB.Model(&models.Click{}).
 		Select("country as name, count(*) as value").
 		Where("url_id = ?", url.ID).
 		Group("country").
-		Scan(&stats.Countries)
+		Scan(&stats.Regions)
+
+	// Referrer breakdown
+	config.DB.Model(&models.Click{}).
+		Select("referer as name, count(*) as value").
+		Where("url_id = ?", url.ID).
+		Group("referer").
+		Scan(&stats.Referrers)
 
 	// Timeline (last 7 days)
 	config.DB.Raw(`
-		SELECT TO_CHAR(timestamp, 'YYYY-MM-DD') as date, COUNT(*) as count
+		SELECT TO_CHAR(timestamp, 'YYYY-MM-DD') as name, COUNT(*) as clicks
 		FROM clicks
 		WHERE url_id = ? AND timestamp > NOW() - INTERVAL '7 days'
-		GROUP BY date
-		ORDER BY date ASC
+		GROUP BY name
+		ORDER BY name ASC
 	`, url.ID).Scan(&stats.Timeline)
 
 	c.JSON(http.StatusOK, util.ResponseSuccess(stats))

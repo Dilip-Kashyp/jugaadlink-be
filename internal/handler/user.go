@@ -11,5 +11,5 @@ func RegisterRoutes(r *gin.RouterGroup) {
 	u := r.Group("/user")
 	u.POST("/register", service.RegisterUser)
 	u.POST("/login", service.LoginUser)
-	u.GET("/get-user", middleware.AuthRequired(), service.GetUsers)
+	u.GET("/get-user", middleware.AuthRequired(), service.GetCurrentUser)
 }

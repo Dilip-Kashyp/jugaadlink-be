@@ -83,8 +83,8 @@ func LoginUser(c *gin.Context) {
 	}))
 }
 
-func GetUsers(c *gin.Context) {
-	var users []models.User
+func GetCurrentUser(c *gin.Context) {
+	var user models.User
 
 	userID, ok := util.GetUserID(c)
 	if !ok {
@@ -92,12 +92,13 @@ func GetUsers(c *gin.Context) {
 		return
 	}
 
-	config.DB.Where("id = ?", userID).Find(&users)
-
-	for i := range users {
-		users[i].Password = ""
+	if err := config.DB.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, util.ResponseError("user not found"))
+		return
 	}
 
-	c.JSON(http.StatusOK, util.ResponseSuccess(users))
+	user.Password = ""
+
+	c.JSON(http.StatusOK, util.ResponseSuccess(user))
 }
 
