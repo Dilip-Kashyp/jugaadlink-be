@@ -20,11 +20,15 @@ import (
 
 func ShortenURL(c *gin.Context) {
 	var input struct {
-		OriginalURL string     `json:"original_url" validate:"required,url"`
-		CustomSlug  string     `json:"custom_slug"`
-		ExpiresAt   *time.Time `json:"expires_at"`
-		Password    string     `json:"password"`
-		MaxClicks   int        `json:"max_clicks"`
+		OriginalURL  string     `json:"original_url" validate:"required,url"`
+		CustomSlug   string     `json:"custom_slug"`
+		ExpiresAt    *time.Time `json:"expires_at"`
+		Password     string     `json:"password"`
+		MaxClicks    int        `json:"max_clicks"`
+		Tags         string     `json:"tags"`
+		Category     string     `json:"category"`
+		Comment      string     `json:"comment"`
+		CustomDomain string     `json:"custom_domain"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -51,10 +55,14 @@ func ShortenURL(c *gin.Context) {
 	}
 
 	url := models.URL{
-		OriginalURL: input.OriginalURL,
-		ShortCode:   shortCode,
-		ExpiresAt:   input.ExpiresAt,
-		MaxClicks:   input.MaxClicks,
+		OriginalURL:  input.OriginalURL,
+		ShortCode:    shortCode,
+		ExpiresAt:    input.ExpiresAt,
+		MaxClicks:    input.MaxClicks,
+		Tags:         input.Tags,
+		Category:     input.Category,
+		Comment:      input.Comment,
+		CustomDomain: input.CustomDomain,
 	}
 
 	if input.Password != "" {
@@ -88,13 +96,20 @@ func ShortenURL(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, util.ResponseSuccess(gin.H{
-		"short_code": shortCode,
-		"short_url":  os.Getenv("SERVER_URL") + shortCode,
+		"short_code":    shortCode,
+		"short_url":     os.Getenv("SERVER_URL") + shortCode,
+		"original_url":  input.OriginalURL,
+		"tags":          input.Tags,
+		"category":      input.Category,
+		"comment":       input.Comment,
+		"custom_domain": input.CustomDomain,
+		"title":         url.Title,
 	}))
 }
 
 func RedirectURL(c *gin.Context) {
 	shortCode := c.Param("code")
+	frontendURL := "http://localhost:3000"
 
 	var url models.URL
 	if err := config.DB.Where("short_code = ?", shortCode).First(&url).Error; err != nil {
@@ -102,19 +117,25 @@ func RedirectURL(c *gin.Context) {
 		return
 	}
 
-	// 1. Temporary Check (Time-based)
+	// 0. Check if link is active
+	if !url.IsActive {
+		c.Redirect(http.StatusFound, frontendURL+"/link-disabled?code="+shortCode)
+		return
+	}
+
+	// 1. Expiry check (time-based)
 	if url.ExpiresAt != nil && time.Now().After(*url.ExpiresAt) {
-		c.JSON(http.StatusGone, util.ResponseError("link has expired"))
+		c.Redirect(http.StatusFound, frontendURL+"/link-disabled?code="+shortCode+"&reason=expired")
 		return
 	}
 
-	// 2. Temporary Check (Usage-based)
+	// 2. Expiry check (usage-based)
 	if url.MaxClicks > 0 && url.Clicks >= url.MaxClicks {
-		c.JSON(http.StatusGone, util.ResponseError("click limit reached"))
+		c.Redirect(http.StatusFound, frontendURL+"/link-disabled?code="+shortCode+"&reason=limit")
 		return
 	}
 
-	// 3. Password Protection
+	// 3. Password protection — redirect to frontend password page
 	if url.Password != "" {
 		password := c.GetHeader("X-URL-Password")
 		if password == "" {
@@ -122,35 +143,102 @@ func RedirectURL(c *gin.Context) {
 		}
 
 		if password == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"status":            false,
-				"message":           "password required",
-				"password_required": true,
-			})
+			c.Redirect(http.StatusFound, frontendURL+"/password/"+shortCode)
 			return
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(url.Password), []byte(password)); err != nil {
-			c.JSON(http.StatusUnauthorized, util.ResponseError("incorrect password"))
+			c.Redirect(http.StatusFound, frontendURL+"/password/"+shortCode+"?error=invalid")
 			return
 		}
 	}
 
-	// 4. Record Click with Referer
+	// 4. Record Click
 	go recordClick(url.ID, c.ClientIP(), c.GetHeader("User-Agent"), c.Request.Referer())
 
-	// 5. Cache (only if no password/limits to avoid complex cache invalidation)
+	// 5. Cache
 	if url.Password == "" && url.MaxClicks == 0 && url.ExpiresAt == nil && config.RedisClient != nil {
 		config.RedisClient.Set(config.RedisClient.Context(), shortCode, url.OriginalURL, time.Hour)
 	}
 
-	// Ensure the URL has a protocol prefix for proper redirect
 	redirectTo := url.OriginalURL
 	if !strings.HasPrefix(redirectTo, "http://") && !strings.HasPrefix(redirectTo, "https://") {
 		redirectTo = "https://" + redirectTo
 	}
 
 	c.Redirect(http.StatusFound, redirectTo)
+}
+
+// VerifyPassword verifies a password for a protected link and returns the redirect URL
+func VerifyPassword(c *gin.Context) {
+	shortCode := c.Param("code")
+	var input struct {
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, util.ResponseError("password is required"))
+		return
+	}
+
+	var url models.URL
+	if err := config.DB.Where("short_code = ?", shortCode).First(&url).Error; err != nil {
+		c.JSON(http.StatusNotFound, util.ResponseError("URL not found"))
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(url.Password), []byte(input.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, util.ResponseError("incorrect password"))
+		return
+	}
+
+	// Record click
+	go recordClick(url.ID, c.ClientIP(), c.GetHeader("User-Agent"), c.Request.Referer())
+
+	redirectTo := url.OriginalURL
+	if !strings.HasPrefix(redirectTo, "http://") && !strings.HasPrefix(redirectTo, "https://") {
+		redirectTo = "https://" + redirectTo
+	}
+
+	c.JSON(http.StatusOK, util.ResponseSuccess(gin.H{
+		"redirect_url": redirectTo,
+	}))
+}
+
+// ToggleURL activates or deactivates a URL
+func ToggleURL(c *gin.Context) {
+	shortCode := c.Param("code")
+
+	var url models.URL
+	query := config.DB.Where("short_code = ?", shortCode)
+
+	if userID, ok := util.GetUserID(c); ok {
+		query = query.Where("user_id = ?", userID)
+	} else {
+		sessionID := c.GetUint("session_id")
+		if sessionID == 0 {
+			c.JSON(http.StatusUnauthorized, util.ResponseError("unauthorized"))
+			return
+		}
+		query = query.Where("session_id = ?", sessionID)
+	}
+
+	if err := query.First(&url).Error; err != nil {
+		c.JSON(http.StatusNotFound, util.ResponseError("URL not found"))
+		return
+	}
+
+	newStatus := !url.IsActive
+	config.DB.Model(&url).Update("is_active", newStatus)
+
+	// Clear cache if deactivating
+	if !newStatus && config.RedisClient != nil {
+		config.RedisClient.Del(c.Request.Context(), shortCode)
+	}
+
+	c.JSON(http.StatusOK, util.ResponseSuccess(gin.H{
+		"is_active": newStatus,
+		"message":   "Link status updated",
+	}))
 }
 
 func GetHistory(c *gin.Context) {
@@ -194,13 +282,21 @@ func GetHistory(c *gin.Context) {
 	history := make([]models.HistoryItem, 0, len(urls))
 	for _, u := range urls {
 		history = append(history, models.HistoryItem{
-			ID:          u.ID,
-			OriginalURL: u.OriginalURL,
-			ShortCode:   u.ShortCode,
-			ShortURL:    os.Getenv("SERVER_URL") + u.ShortCode,
-			Clicks:      u.Clicks,
-			ExpiresAt:   u.ExpiresAt,
-			CreatedAt:   u.CreatedAt,
+			ID:           u.ID,
+			OriginalURL:  u.OriginalURL,
+			ShortCode:    u.ShortCode,
+			ShortURL:     os.Getenv("SERVER_URL") + u.ShortCode,
+			Clicks:       u.Clicks,
+			ExpiresAt:    u.ExpiresAt,
+			CreatedAt:    u.CreatedAt,
+			Tags:         u.Tags,
+			Category:     u.Category,
+			Comment:      u.Comment,
+			CustomDomain: u.CustomDomain,
+			Title:        u.Title,
+			Description:  u.Description,
+			Image:        u.Image,
+			IsActive:     u.IsActive,
 		})
 	}
 

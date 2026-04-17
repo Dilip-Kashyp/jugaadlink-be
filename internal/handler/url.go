@@ -12,6 +12,7 @@ func URLRoutes(r *gin.RouterGroup) {
 	u.POST("/shorten", middleware.ResolveIdentity(), middleware.RateLimiter(), service.ShortenURL)
 	u.GET("/history", middleware.ResolveIdentity(), service.GetHistory)
 	u.DELETE("/:code", middleware.AuthRequired(), service.DeleteURL)
+	u.PATCH("/:code/toggle", middleware.ResolveIdentity(), service.ToggleURL)
 	u.GET("/analytics", middleware.AuthRequired(), service.GetDashboardAnalytics)
 	u.GET("/analytics/:code", middleware.AuthRequired(), service.GetURLStats)
 	u.GET("/preview", middleware.ResolveIdentity(), service.GetLinkPreview)
@@ -19,4 +20,5 @@ func URLRoutes(r *gin.RouterGroup) {
 
 func RedirectURLRoutes(r *gin.RouterGroup) {
 	r.GET("/:code", service.RedirectURL)
+	r.POST("/verify-password/:code", service.VerifyPassword)
 }

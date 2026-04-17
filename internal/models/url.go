@@ -19,6 +19,11 @@ type URL struct {
 	Title        string       `json:"title"`
 	Description  string       `json:"description"`
 	Image        string       `json:"image"`
+	Tags         string       `json:"tags"`
+	Category     string       `json:"category"`
+	Comment      string       `json:"comment"`
+	CustomDomain string       `json:"custom_domain"`
+	IsActive     bool         `json:"is_active" gorm:"default:true"`
 	User         User         `gorm:"foreignKey:UserID"`
 	GuestSession GuestSession `gorm:"foreignKey:SessionID"`
 	ClicksData   []Click      `gorm:"foreignKey:URLID"`
