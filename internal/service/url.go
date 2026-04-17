@@ -144,7 +144,13 @@ func RedirectURL(c *gin.Context) {
 		config.RedisClient.Set(config.RedisClient.Context(), shortCode, url.OriginalURL, time.Hour)
 	}
 
-	c.Redirect(http.StatusMovedPermanently, url.OriginalURL)
+	// Ensure the URL has a protocol prefix for proper redirect
+	redirectTo := url.OriginalURL
+	if !strings.HasPrefix(redirectTo, "http://") && !strings.HasPrefix(redirectTo, "https://") {
+		redirectTo = "https://" + redirectTo
+	}
+
+	c.Redirect(http.StatusFound, redirectTo)
 }
 
 func GetHistory(c *gin.Context) {
