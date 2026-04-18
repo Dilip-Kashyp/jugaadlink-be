@@ -13,6 +13,7 @@ func URLRoutes(r *gin.RouterGroup) {
 	u.GET("/history", middleware.ResolveIdentity(), service.GetHistory)
 	u.DELETE("/:code", middleware.AuthRequired(), service.DeleteURL)
 	u.PATCH("/:code/toggle", middleware.ResolveIdentity(), service.ToggleURL)
+	u.PATCH("/:code", middleware.ResolveIdentity(), service.UpdateURL)
 	u.GET("/analytics", middleware.AuthRequired(), service.GetDashboardAnalytics)
 	u.GET("/analytics/:code", middleware.AuthRequired(), service.GetURLStats)
 	u.GET("/preview", middleware.ResolveIdentity(), service.GetLinkPreview)
@@ -20,5 +21,6 @@ func URLRoutes(r *gin.RouterGroup) {
 
 func RedirectURLRoutes(r *gin.RouterGroup) {
 	r.GET("/:code", service.RedirectURL)
-	r.POST("/verify-password/:code", service.VerifyPassword)
+	// ResolveIdentity lets the handler attribute the verified click to a user/session
+	r.POST("/verify-password/:code", middleware.ResolveIdentity(), service.VerifyPassword)
 }

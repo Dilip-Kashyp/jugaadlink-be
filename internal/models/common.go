@@ -15,6 +15,8 @@ type HistoryItem struct {
 	ShortCode    string     `json:"short_code"`
 	ShortURL     string     `json:"short_url"`
 	Clicks       int        `json:"clicks"`
+	MaxClicks    int        `json:"max_clicks"`
+	HasPassword  bool       `json:"has_password"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	Tags         string     `json:"tags"`

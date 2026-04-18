@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"url-shortener/internal/config"
 	"url-shortener/internal/handler"
 	"url-shortener/internal/middleware"
@@ -14,9 +16,16 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
+	// Allowed origins from env (comma-separated), falling back to localhost dev defaults
+	rawOrigins := os.Getenv("ALLOWED_ORIGINS")
+	if rawOrigins == "" {
+		rawOrigins = "http://localhost:3000,http://127.0.0.1:3000"
+	}
+	allowedOrigins := strings.Split(rawOrigins, ",")
+
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8080", "https://jugaadlink.vercel.app"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowOrigins:     allowedOrigins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Session-Token"},
 		ExposeHeaders:    []string{"X-Session-Token"},
 		AllowCredentials: true,
@@ -34,16 +43,10 @@ func main() {
 	handler.URLRoutes(v1)
 	handler.RedirectURLRoutes(public)
 
-	// go func() {
-	// 	ticker := time.NewTicker(24 * time.Hour) // Run daily
-	// 	defer ticker.Stop()
-	// 	for {
-	// 		select {
-	// 		case <-ticker.C:
-	// 			utils.CleanupExpiredData()
-	// 		}
-	// 	}
-	// }()
-
-	r.Run(":8080")
+	// Determine port
+	port := os.Getenv("APP_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	r.Run(":" + port)
 }

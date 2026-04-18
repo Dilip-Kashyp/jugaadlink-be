@@ -109,7 +109,7 @@ func ShortenURL(c *gin.Context) {
 
 func RedirectURL(c *gin.Context) {
 	shortCode := c.Param("code")
-	frontendURL := os.Getenv("FRONTEND_URL")
+	frontendURL := strings.TrimRight(os.Getenv("FRONTEND_URL"), "/")
 	if frontendURL == "" {
 		frontendURL = "http://localhost:3000"
 	}
@@ -207,7 +207,100 @@ func VerifyPassword(c *gin.Context) {
 	}))
 }
 
-// ToggleURL activates or deactivates a URL
+// UpdateURL allows the owner of a link to update its metadata after creation
+func UpdateURL(c *gin.Context) {
+	shortCode := c.Param("code")
+
+	var input struct {
+		Password  *string    `json:"password"`
+		ExpiresAt *time.Time `json:"expires_at"`
+		MaxClicks *int       `json:"max_clicks"`
+		Tags      *string    `json:"tags"`
+		Category  *string    `json:"category"`
+		Comment   *string    `json:"comment"`
+		IsActive  *bool      `json:"is_active"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, util.ResponseError(err.Error()))
+		return
+	}
+
+	query := config.DB.Where("short_code = ?", shortCode)
+
+	if userID, ok := util.GetUserID(c); ok {
+		query = query.Where("user_id = ?", userID)
+	} else {
+		sessionID := c.GetUint("session_id")
+		if sessionID == 0 {
+			c.JSON(http.StatusUnauthorized, util.ResponseError("unauthorized"))
+			return
+		}
+		query = query.Where("session_id = ?", sessionID)
+	}
+
+	var url models.URL
+	if err := query.First(&url).Error; err != nil {
+		c.JSON(http.StatusNotFound, util.ResponseError("URL not found"))
+		return
+	}
+
+	updates := map[string]interface{}{}
+
+	if input.Password != nil {
+		if *input.Password == "" {
+			// Clear the password
+			updates["password"] = ""
+		} else {
+			hashed, err := bcrypt.GenerateFromPassword([]byte(*input.Password), bcrypt.DefaultCost)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, util.ResponseError("failed to hash password"))
+				return
+			}
+			updates["password"] = string(hashed)
+		}
+	}
+	if input.ExpiresAt != nil {
+		updates["expires_at"] = input.ExpiresAt
+	}
+	if input.MaxClicks != nil {
+		updates["max_clicks"] = *input.MaxClicks
+	}
+	if input.Tags != nil {
+		updates["tags"] = *input.Tags
+	}
+	if input.Category != nil {
+		updates["category"] = *input.Category
+	}
+	if input.Comment != nil {
+		updates["comment"] = *input.Comment
+	}
+	if input.IsActive != nil {
+		updates["is_active"] = *input.IsActive
+	}
+
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, util.ResponseError("no fields to update"))
+		return
+	}
+
+	if err := config.DB.Model(&url).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, util.ResponseError(err.Error()))
+		return
+	}
+
+	// Invalidate Redis cache on update so redirects pick up the new state
+	if config.RedisClient != nil {
+		config.RedisClient.Del(c.Request.Context(), shortCode)
+	}
+
+	c.JSON(http.StatusOK, util.ResponseSuccess(gin.H{
+		"message":    "Link updated successfully",
+		"short_code": shortCode,
+	}))
+}
+
+
 func ToggleURL(c *gin.Context) {
 	shortCode := c.Param("code")
 
@@ -290,6 +383,8 @@ func GetHistory(c *gin.Context) {
 			ShortCode:    u.ShortCode,
 			ShortURL:     os.Getenv("SERVER_URL") + u.ShortCode,
 			Clicks:       u.Clicks,
+			MaxClicks:    u.MaxClicks,
+			HasPassword:  u.Password != "",
 			ExpiresAt:    u.ExpiresAt,
 			CreatedAt:    u.CreatedAt,
 			Tags:         u.Tags,
@@ -361,6 +456,18 @@ func DeleteURL(c *gin.Context) {
 	}))
 }
 
+// isPrivateIP reports whether ip is a loopback or private-range address
+// that ip-api.com cannot resolve (Docker bridge, localhost, etc.).
+func isPrivateIP(ip string) bool {
+	private := []string{"127.", "::1", "10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31."}
+	for _, prefix := range private {
+		if strings.HasPrefix(ip, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func recordClick(urlID uint, ip, ua, referer string) {
 	uaParser := useragent.New(ua)
 	browserName, browserVersion := uaParser.Browser()
@@ -370,7 +477,7 @@ func recordClick(urlID uint, ip, ua, referer string) {
 		UserAgent: ua,
 		Browser:   fmt.Sprintf("%s %s", browserName, browserVersion),
 		OS:        uaParser.OS(),
-		Device:    "Desktop", // Default
+		Device:    "Desktop",
 		Referer:   referer,
 	}
 
@@ -380,22 +487,24 @@ func recordClick(urlID uint, ip, ua, referer string) {
 		click.Device = "Bot"
 	}
 
-	// Fetch Geographic Data
-	resp, err := http.Get(fmt.Sprintf("http://ip-api.com/json/%s", ip))
-	if err == nil {
-		defer resp.Body.Close()
-		var geo struct {
-			Country string `json:"country"`
-			City    string `json:"city"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&geo); err == nil {
-			click.Country = geo.Country
-			click.City = geo.City
+	// Geo-IP lookup — skip for private/local addresses (Docker bridge, localhost)
+	if !isPrivateIP(ip) {
+		resp, err := http.Get(fmt.Sprintf("http://ip-api.com/json/%s", ip))
+		if err == nil {
+			defer resp.Body.Close()
+			var geo struct {
+				Country string `json:"country"`
+				City    string `json:"city"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&geo); err == nil {
+				click.Country = geo.Country
+				click.City = geo.City
+			}
 		}
 	}
 
 	if err := config.DB.Create(&click).Error; err != nil {
-		// Log error
+		// log error
 	}
 
 	config.DB.Model(&models.URL{}).Where("id = ?", urlID).Update("clicks", gorm.Expr("clicks + 1"))
