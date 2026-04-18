@@ -3,5 +3,5 @@
 *.log
 *.exe
 .prod.env
-docker-compose.yml
-Dockerfile
+/docker-compose.yml
+/Dockerfile
