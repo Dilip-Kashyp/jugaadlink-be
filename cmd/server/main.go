@@ -38,10 +38,12 @@ func main() {
 
 	v1 := r.Group("/api/v1")
 	public := r.Group("/")
+	auth := r.Group("/auth") // matches /auth/google/callback and /auth/github/callback
 	handler.PingRoutes(v1)
 	handler.RegisterRoutes(v1)
 	handler.URLRoutes(v1)
 	handler.RedirectURLRoutes(public)
+	handler.OAuthRoutes(auth)
 
 	// Determine port
 	port := os.Getenv("APP_PORT")
@@ -50,3 +52,4 @@ func main() {
 	}
 	r.Run(":" + port)
 }
+
