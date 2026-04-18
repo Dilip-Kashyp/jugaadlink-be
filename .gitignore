@@ -2,7 +2,7 @@
 *.exe
 *.log
 *.exe
-.prod.env
+.env.prod
 /docker-compose.yml
 /Dockerfile
-/prod.env
+/.env.prod
