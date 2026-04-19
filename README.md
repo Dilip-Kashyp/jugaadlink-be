@@ -7,7 +7,6 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://postgresql.org)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)](https://redis.io)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://docker.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 JugaadLink is a production-ready URL shortener with JWT authentication, click analytics, geographic tracking, password-protected links, and Redis-backed sub-millisecond redirects. It is designed to be self-hosted and extended.
 
@@ -210,7 +209,3 @@ Contributions in any form are welcome: bug reports, feature requests, documentat
 2. Create a feature branch: `git checkout -b feature/your-feature`.
 3. Commit your changes with a clear message.
 4. Push to the branch and open a pull request against `main`.
-
-## License
-
-MIT License. See [LICENSE](LICENSE) for full text.
