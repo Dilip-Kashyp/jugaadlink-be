@@ -110,9 +110,6 @@ func ShortenURL(c *gin.Context) {
 func RedirectURL(c *gin.Context) {
 	shortCode := c.Param("code")
 	frontendURL := strings.TrimRight(os.Getenv("FRONTEND_URL"), "/")
-	if frontendURL == "" {
-		frontendURL = "http://localhost:3000"
-	}
 
 	var url models.URL
 	if err := config.DB.Where("short_code = ?", shortCode).First(&url).Error; err != nil {
