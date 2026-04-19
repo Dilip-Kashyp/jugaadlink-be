@@ -58,6 +58,14 @@ func GetTokenClaims(c *gin.Context) (jwt.MapClaims, bool) {
 }
 
 func GetUserID(c *gin.Context) (uint, bool) {
+	// ResolveIdentity middleware sets "user_id" directly on the context.
+	if uid, exists := c.Get("user_id"); exists {
+		if id, ok := uid.(uint); ok && id != 0 {
+			return id, true
+		}
+	}
+
+	// AuthRequired middleware sets "token_claims" on the context.
 	claims, ok := GetTokenClaims(c)
 	if !ok {
 		return 0, false
