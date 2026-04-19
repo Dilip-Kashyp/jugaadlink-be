@@ -16,18 +16,16 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
-	// Allowed origins from env (comma-separated), falling back to localhost dev defaults
-	rawOrigins := os.Getenv("ALLOWED_ORIGINS")
-	if rawOrigins == "" {
-		rawOrigins = "http://localhost:3000,http://127.0.0.1:3000"
-	}
-	allowedOrigins := strings.Split(rawOrigins, ",")
-
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     allowedOrigins,
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowHeaders:     []string{"Content-Type", "Authorization", "X-Session-Token"},
-		ExposeHeaders:    []string{"X-Session-Token"},
+		AllowOriginFunc: func(origin string) bool {
+			if strings.HasPrefix(origin, "chrome-extension://") {
+				return true
+			}
+			return origin == "https://jugaadlink.vercel.app"
+		},
+		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders: []string{"Origin", "Content-Type", "Authorization", "X-Session-Token"},
+		ExposeHeaders: []string{"X-Session-Token"},
 		AllowCredentials: true,
 	}))
 	r.Use(middleware.Logger())
