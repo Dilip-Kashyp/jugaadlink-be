@@ -23,7 +23,7 @@ func main() {
 			}
 			return origin == "https://jugaadlink.vercel.app"
 		},
-		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders: []string{"Origin", "Content-Type", "Authorization", "X-Session-Token"},
 		ExposeHeaders: []string{"X-Session-Token"},
 		AllowCredentials: true,
